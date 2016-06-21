@@ -121,9 +121,6 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
         with self.handler_lock:
             self.handler_cond.wait()
         # print("@@@@@@@@@@@ alive again")
-        out_str = self.handle_request(self.path)
-        # print("out_str={}".format(out_str))
-        self.write_result(out_str)
 
     # return out_str
     def handle_request(self, path):
@@ -193,6 +190,8 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
                 self.seq += 1
                 if res_server_id == self.server_id:  # this server's operation
                     print("{} do desired job @{}".format(self.server_id, self.seq))
+                    out_str = handler.handle_request(res_path)
+                    handler.write_result(out_str)
                     with handler.handler_lock:
                         handler.handler_cond.notify()
                     break
