@@ -207,11 +207,10 @@ class PaxosPeer:
         actual_val=min(res)
         print("in done {}, receive {}, decide {}".format(seq,res,actual_val))
         with self.paxos_state_lock:
-            seqs=list(self.paxos_state.keys())
+            seqs=[k for k in self.paxos_state if k<=actual_val]
             for s in seqs:
-                if s<=actual_val:
-                    self.paxos_state.pop(s)
-                    #TODO: how to deal with acceptors?
+                self.paxos_state.pop(s)
+                self.acceptor_state.pop(s)
 
 
     # highest instance seq known or -1
