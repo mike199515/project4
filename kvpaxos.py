@@ -316,10 +316,10 @@ if __name__ == "__main__":
     peers = []
     for key in cfg:
         if 'n' in key:
-            peers.append(cfg[key] + ":9999")
+            peers.append(cfg[key] + ":" + str(9999 + node_id))
         if key == "n{0:02d}".format(node_id):
             mapping_id = len(peers) - 1
-    server_str = cfg["n{0:02d}".format(node_id)] + ":" + cfg["port"]
+    server_str = cfg["n{0:02d}".format(node_id)] + ":" + str(int(cfg["port"]) + node_id)
     server_tup = server_str.split(":")
     server_tup = (server_tup[0], int(server_tup[1]))
     px = PaxosPeer(peers, mapping_id)

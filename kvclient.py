@@ -9,13 +9,12 @@ from read_write_lock import ReadWriteLock
 from paxos_peer import PaxosPeer
 
 cfg = json.load(open('conf/settings.conf'))
-
 servers=[]
 for k in cfg:
     if "n" in k:
-        server_str = cfg[k] + ":" + cfg["port"]
+        server_str = cfg[k] + ":" + str(int(cfg["port"])+int(k[-2:]))
+        print(server_str)
         servers.append(server_str)
-
 
 insert_url = "/kv/insert/key={0}&value={1}"
 query_url = "/kv/get?key={0}"
@@ -125,10 +124,13 @@ class KvClient:
 
     def basic_func_test(self):
         time.sleep(1)
-        key = "basic_func" + "hello"
-        value = "basic_func" + "world"
+        key = "basicfunc" + "hello"
+        value = "basicfunc" + "world"
+        
+        #self.request("GET",dump_url,'count',{key:value, key+'2':value+'2', key+'3':value+'3'})
         self.request("POST",insert_url.format(key,value),'insert',{'success':'true'})
-        time.sleep(0.1)
+        #time.sleep(0.1)
+        '''
         self.request("POST",insert_url.format(key,value),'insert',{'success':'false'})
         time.sleep(0.1)
         self.request("POST",update_url.format(key,value + '!'),'update',{'success':'true'})
@@ -154,7 +156,7 @@ class KvClient:
         #self.request("GET",dump_url,'count',{key:value, key+'2':value+'2', key+'3':value+'3'})
         #self.bak_request("GET",dump_url,'count',{key:value, key+'2':value+'2', key+'3':value+'3'})
         time.sleep(10)
-
+'''
 
 
 
@@ -214,7 +216,7 @@ class KvClient:
 
 a = KvClient()
 a.basic_func_test()
-a.key_delete_test()
-a.multiple_key_test()
-a.single_key_pressure_test()
+#a.key_delete_test()
+#a.multiple_key_test()
+#a.single_key_pressure_test()
 a.analysis()

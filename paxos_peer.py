@@ -4,6 +4,7 @@ import threading
 import http
 import json
 import time
+from IPython import embed
 from urllib.parse import urlparse
 
 
@@ -141,6 +142,7 @@ class PaxosPeer:
                 if __name__ == "__main__":
                     pass
                 else:
+                    embed()
                     raise
         return ("connection fail", ())
 
