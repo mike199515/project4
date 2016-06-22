@@ -31,7 +31,7 @@ class PaxosState:
 
 
 class PaxosRequestHandler(BaseHTTPRequestHandler):
-    if __name__ == "__main__":
+    if __name__ == "__main__" or True:
        def log_message(self, format, *args):
             return
 
@@ -53,7 +53,7 @@ class PaxosRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         out_str = json.dumps(out)
         self.wfile.write(out_str.encode(encoding="utf_8"))
-        # print("{} reply {}".format(self.server.peer.me,out))
+        #print("{} reply {}".format(self.server.peer.me,out))
 
     def prepare(self, seq, n):
         if seq < self.server.peer.min():
@@ -67,7 +67,7 @@ class PaxosRequestHandler(BaseHTTPRequestHandler):
             self._reply(("prepare_ok", (state.n_a, state.v_a)))
         else:
             # print("reject prepare n_p={},n={}, v={}".format(state.n_p,n,state.v_a))
-            self._reply(("prepare_reject", ()))
+            self._reply(("prepare_reject", (state.n_p)))
 
     def accept(self, seq, n, v):
         if seq < self.server.peer.min():
@@ -82,7 +82,7 @@ class PaxosRequestHandler(BaseHTTPRequestHandler):
             state.v_a = v
             self._reply(("accept_ok", n))
         else:
-            self._reply(("accept_reject", ()))
+            self._reply(("accept_reject", (state.n_p)))
 
     def decided(self, seq, v):
         with self.lock:
@@ -125,7 +125,7 @@ class PaxosPeer:
             print("acceptor server start at {}".format(self.my_url))
 
     def _send(self, msg, url):
-        # print("send {} to {}".format(msg, url))
+        #print("send {} to {}".format(msg, url))
         flag = False
         fail_time = 0
         while fail_time < 5:
@@ -191,6 +191,11 @@ class PaxosPeer:
             if self.dead: break
             n = state.k * len(self.peers) + self.me
             res = self._send_all(("prepare", (seq, n)))
+            max_seen=n
+            for r in res:
+                if r[0]=="prepare_reject" and r[1]>max_seen:
+                    max_seen=r[1]
+
             if self._majority(res, "prepare_ok"):
                 n_a = 0
                 vp = v
@@ -202,10 +207,13 @@ class PaxosPeer:
                 if self._majority(accept_res, "accept_ok"):
                     self._send_all(("decided", (seq, vp)))
                 else:
-                    state.k = max(n, n_a) // len(self.peers) + 1  # bigger than any one seen
+                   for r in accept_res:
+                       if r[0]=="accept_reject" and r[1]>max_seen:
+                           max_seen=r[1]
+                   state.k = max_seen // len(self.peers) + 1  # bigger than any one seen
             else:
                 assert (n // len(self.peers) == state.k)
-                state.k = n // len(self.peers) + 1  # bigger than any one seen
+                state.k = max_seen // len(self.peers) + 1  # bigger than any one seen
 
     # start aggreement on new instance
     def start(self, seq, v):

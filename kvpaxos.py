@@ -176,7 +176,7 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
         self.seq_cond=threading.Condition(self.seq_lock)
         self.max_seq=0
         self.working_seq = set()
-        self.MAX_WORKER=5
+        self.MAX_WORKER=10
         threading.Thread(target=self.pending_handler).start()
         super(KvpaxosHttpServer, self).__init__(*args, **kargs)
 
