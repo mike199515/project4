@@ -1,21 +1,9 @@
 #!/bin/bash
 if [[ $# -ne 1 ]]
 then
-    echo "Usage: startserver {-p/-b}"
+    echo "Usage: startserver {node_id}"
 else
-    key="$1"
-    case $key in
-    -p)
-    shift
-    gnome-terminal -x python3 server.py & disown
-    ;;
-    -b)
-    shift
-    gnome-terminal -x python3 bak_server.py & disown
-    ;;
-    *)
-    echo "Usage: startserver {-p/-b}"
-    ;;
-    esac
+    node_id=$1
+    gnome-terminal -x python3 kvpaxos.py $node_id & disown
 fi
 #GLOG_logtostderr=1 CUDA_VISIBLE_DEVICES=$DEVICE $TOOLS train -solver $SOLVER $* 2>&1|tee log/train-$LOGPRE-$now.log& pid=$!
