@@ -61,6 +61,7 @@ class KvClient:
                         conn.request(method=method_str, url = '/' + request_data[0] + '/' + request_data[1], body = request_data[2])
                     else:
                         conn.request(method=method_str, url=request_str)
+                    break;
                 except ConnectionRefusedError and ConnectionResetError:
                     server_id=(server_id+1)%len(servers)
                     print("[kvclient]fail, connecting next server")
@@ -124,13 +125,12 @@ class KvClient:
 
     def basic_func_test(self):
         time.sleep(1)
-        key = "basicfunc" + "hello"
-        value = "basicfunc" + "world"
+        key = "basic_func" + "hello"
+        value = "basic_func" + "world"
         
-        #self.request("GET",dump_url,'count',{key:value, key+'2':value+'2', key+'3':value+'3'})
         self.request("POST",insert_url.format(key,value),'insert',{'success':'true'})
-        #time.sleep(0.1)
-        '''
+        time.sleep(0.1)
+
         self.request("POST",insert_url.format(key,value),'insert',{'success':'false'})
         time.sleep(0.1)
         self.request("POST",update_url.format(key,value + '!'),'update',{'success':'true'})
@@ -156,9 +156,6 @@ class KvClient:
         #self.request("GET",dump_url,'count',{key:value, key+'2':value+'2', key+'3':value+'3'})
         #self.bak_request("GET",dump_url,'count',{key:value, key+'2':value+'2', key+'3':value+'3'})
         time.sleep(10)
-'''
-
-
 
     def multiple_key_test(self):
         keys = ["multiple_" + str(i) for i in range(100)]
@@ -167,18 +164,23 @@ class KvClient:
         time.sleep(1)
         for key in keys:
             self.request("POST", insert_url.format(key, key), 'insert')
+            time.sleep(0.02)
         time.sleep(1)
         for key in keys:
             self.request("GET", query_url.format(key), 'get')
+            time.sleep(0.02)
         time.sleep(1)
         for key in keys:
             self.request("POST", update_url.format(key, key + key))
+            time.sleep(0.02)
         time.sleep(1)
         for key in keys:
             self.request("GET", query_url.format(key), 'get')
+            time.sleep(0.02)
         time.sleep(1)
         for key in keys:
             self.request("POST", delete_url.format(key), 'delete')
+            time.sleep(0.02)
         time.sleep(1)
 
         # os.system("bin//stop_server -p")
@@ -190,13 +192,13 @@ class KvClient:
         time.sleep(1)
         key = "single_pressure"
         value = "init_val"
-        iteration_time = 1000
+        iteration_time = 200
         self.request("POST", insert_url.format(key, value), 'insert')
 
         for i in range(iteration_time):
-            time.sleep(0.02)
+            time.sleep(0.5)
             self.request("POST", update_url.format(key, str(i)), 'update')
-            time.sleep(0.02)
+            time.sleep(0.5)
             self.request("GET", query_url.format(key), 'get', expect_dict={'success':'true','value':str(i)});
         time.sleep(2)
 
@@ -207,16 +209,16 @@ class KvClient:
         iteration_time = 200
 
         for i in range(iteration_time):
-            time.sleep(0.02)
+            time.sleep(0.1)
             self.request("POST", insert_url.format(key, value), 'insert')
-            time.sleep(0.02)
+            time.sleep(0.1)
             self.request("POST", delete_url.format(key), 'delete')
         time.sleep(2)
 
 
 a = KvClient()
-a.basic_func_test()
-#a.key_delete_test()
-#a.multiple_key_test()
-#a.single_key_pressure_test()
+#a.basic_func_test()
+a.key_delete_test()
+a.multiple_key_test()
+a.single_key_pressure_test()
 a.analysis()

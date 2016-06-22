@@ -129,7 +129,7 @@ class PaxosPeer:
         #print("send {} to {}".format(msg, url))
         flag = False
         fail_time = 0
-        while fail_time < 5:
+        while fail_time < 1000:
             conn = http.client.HTTPConnection(url)
             try:
                 conn.request(method="POST", url="", body=json.dumps(msg))

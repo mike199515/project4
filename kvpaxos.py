@@ -18,6 +18,7 @@ cfg = json.load(open('conf/settings.conf'))
 
 class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
     METHODS = {'insert', 'delete', 'get', 'update', 'serialize', 'countkey', 'dump', 'shutdown', 'restart'}
+    BOOL_MAP = {True: 'true', False: 'false'}
 
     def __init__(self, *args, **kargs):
         super(BaseHTTPRequestHandler, self).__init__(*args, **kargs)
@@ -39,6 +40,10 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def gen_output(output_dict):
+        if isinstance(output_dict, dict):
+            for k, v in output_dict.items():
+                if v in ProjectHTTPRequestHandler.BOOL_MAP:
+                    output_dict[k] = ProjectHTTPRequestHandler.BOOL_MAP[v]
         ret = json.dumps(output_dict)
         # print("output:{}".format(ret))
         return ret
@@ -82,9 +87,9 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
         key = ins['key']
         value = self.server.database.delete(key)
         if value:
-            outs = {'success': True}
+            outs = {'success': True, 'value': value}
         else:
-            outs = {'success': False}
+            outs = {'success': False, 'value': ""}
         return outs
 
     def update_request(self, command, ins):
@@ -248,6 +253,7 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
                         else:
                             print("***** wait")
                             self.seq_cond.wait()
+                        time.sleep(0.001)
 
     def pending_worker(self,pending_handlers, pending_command_paths):
         while True:
@@ -314,11 +320,16 @@ if __name__ == "__main__":
         print ("Usage: python3 kvpaxos.py node_id")
         exit()
     peers = []
+    #peers = ['127.0.0.1:10000','127.0.0.1:10001','127.0.0.1:10002']
+    #mapping_id = node_id - 1
+
     for key in cfg:
         if 'n' in key:
-            peers.append(cfg[key] + ":" + str(9999 + node_id))
+            peers.append(cfg[key] + ":" + str(9999 + int(key[-2:])))
         if key == "n{0:02d}".format(node_id):
             mapping_id = len(peers) - 1
+    print(peers)
+    print(mapping_id)
     server_str = cfg["n{0:02d}".format(node_id)] + ":" + str(int(cfg["port"]) + node_id)
     server_tup = server_str.split(":")
     server_tup = (server_tup[0], int(server_tup[1]))
