@@ -4,6 +4,6 @@ then
     echo "Usage: startserver {node_id}"
 else
     node_id=$1
-    gnome-terminal -x python3 kvpaxos.py $node_id & disown
+    gnome-terminal -x python3 start_server.py $node_id
 fi
 #GLOG_logtostderr=1 CUDA_VISIBLE_DEVICES=$DEVICE $TOOLS train -solver $SOLVER $* 2>&1|tee log/train-$LOGPRE-$now.log& pid=$!
