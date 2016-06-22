@@ -13,11 +13,14 @@ import queue
 import time
 import re
 import random
-from IPython import embed
 
+cfg = json.load(open('conf/settings.conf'))
 
 class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
-    METHODS = {'insert', 'delete', 'get', 'update', 'serialize', 'countkey', 'dump', 'shutdown'}
+    METHODS = {'insert', 'delete', 'get', 'update', 'serialize', 'countkey', 'dump', 'shutdown', 'restart'}
+
+    def __init__(self, *args, **kargs):
+        super(BaseHTTPRequestHandler, self).__init__(*args, **kargs)
 
     @staticmethod
     def parse_input(input_str):
@@ -51,8 +54,12 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
         outs = self.server.database.dump()
         return outs
 
-    def shutdown_request(self, ins):
-        os.system('bin/stop_server -b')
+    def shutdown_request(self, command, ins):
+        self.server.running = False
+        #os.system('bin/stop_server -b')
+
+    def restart_request(self, command, ins):
+        self.server.running = True
 
     def serialize_request(self, command, ins):
         # we need to verify it is the other server that calls us
@@ -99,12 +106,31 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
             outs = {'success': False, 'value': ""}
         return outs
 
+    def check_kvman(self, path):
+        request = path.split('/')
+        request = [r for r in request if r != ""]
+        if len(request) == 3:
+            name, request, input_str = request
+        elif len(request) == 2:
+            name, request = request
+        else:
+            return False
+        return name =='kvman'
+
     def do_GET(self):
+        if not self.server.running and self.path != '/kvman/restart':
+            return
         if "?" in self.path:
             self.path = self.path.replace("?", "/?", 1)
-        self.consensus_request()
+        if not self.check_kvman(self.path):
+            self.consensus_request()
+        else:
+            print("kvman request")
+            self.write_result(self.handle_request(self.command, self.path))
 
     def do_POST(self):
+        if not self.server.running:
+            return
         try:
             length = int(self.headers["Content-Length"])
             input_str = self.rfile.read(length).decode("utf-8")
@@ -177,6 +203,7 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
         self.max_seq=0
         self.working_seq = set()
         self.MAX_WORKER=10
+        self.running = True
         threading.Thread(target=self.pending_handler).start()
         super(KvpaxosHttpServer, self).__init__(*args, **kargs)
 
@@ -279,47 +306,23 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
 
 
 if __name__ == "__main__":
-    peers = ["localhost:8000", "localhost:8001", "localhost:8002"]
-    server_str = ["localhost:5000", "localhost:5001", "localhost:5002"]
-    server_tup = [s.split(":") for s in server_str]
-    server_tup = [(l[0], int(l[1])) for l in server_tup]
-    px = [PaxosPeer(peers, i) for i in range(3)]
-    servers = [KvpaxosHttpServer(i, px[i], server_tup[i], ProjectHTTPRequestHandler) for i in range(3)]
-
-
-    def run(i):
-        servers[i].serve_forever()
-
-
-    for i in range(3):
-        threading.Thread(target=run, args=(i,)).start()
-
-
-    def dump(server_id):
-        print("request_sent")
-        conn = http.client.HTTPConnection(server_str[server_id])
-        conn.request(method="GET", url='/kvman/dump')
-        res = conn.getresponse()
-        res_json = json.loads(res.read().decode('utf-8'))
-        print(res_json)
-
-
-    def op(server_id, key):
-        print("request_sent")
-        conn = http.client.HTTPConnection(server_str[server_id])
-        conn.request(method="POST", url='/kv/insert', body="key={}&value=v".format(key))
-        res = conn.getresponse()
-        res_json = json.loads(res.read().decode('utf-8'))
-        print("request{}:{}".format((server_id,key),res_json))
-
-    '''
-    for i in range(30):
-        threading.Thread(target=op, args=(i % 3, i)).start()
-        time.sleep(0.01)
-
-    threading.Thread(target=dump, args=(i % 3,)).start()
-    '''
-    for i in range(100):
-        threading.Thread(target=op, args=(0, 0)).start()
-        threading.Thread(target=op, args=(1, 0)).start()
-        threading.Thread(target=op, args=(2, 0)).start()
+    try:
+        if len(sys.argv) != 2:
+            raise ValueError
+        node_id = int(sys.argv[1])
+    except ValueError:
+        print ("Usage: python3 kvpaxos.py node_id")
+        exit()
+    peers = []
+    for key in cfg:
+        if 'n' in key:
+            peers.append(cfg[key] + ":9999")
+        if key == "n{0:02d}".format(node_id):
+            mapping_id = len(peers) - 1
+    server_str = cfg["n{0:02d}".format(node_id)] + ":" + cfg["port"]
+    server_tup = server_str.split(":")
+    server_tup = (server_tup[0], int(server_tup[1]))
+    px = PaxosPeer(peers, mapping_id)
+    server = KvpaxosHttpServer(mapping_id, px, server_tup, ProjectHTTPRequestHandler)
+    print("Node {} started at {}".format(node_id, server_str))
+    server.serve_forever()

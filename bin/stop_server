@@ -1,0 +1,21 @@
+#!/bin/bash
+if [[ $# -ne 1 ]]
+then
+    echo "Usage: startserver {-p/-b}"
+else
+    key="$1"
+    case $key in
+    -p)
+    shift
+    ps -ax | grep -i python3\ server.py | grep -v grep | awk '{print $1}' | xargs kill -9
+    ;;
+    -b)
+    shift
+    ps -ax | grep -i python3\ bak_server.py | grep -v grep | awk '{print $1}' | xargs kill -9
+    ;;
+    *)
+    echo "Usage: startserver {-p/-b}"
+    ;;
+    esac
+fi
+#GLOG_logtostderr=1 CUDA_VISIBLE_DEVICES=$DEVICE $TOOLS train -solver $SOLVER $* 2>&1|tee log/train-$LOGPRE-$now.log& pid=$!
