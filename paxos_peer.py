@@ -298,8 +298,14 @@ class PaxosTest:
         self.px[peer_id].start(seq_id, value)
 
     def wait_status(self, peer_id, seq_id):
-        while self.px[peer_id].status(seq_id).decided == False:
-            pass
+        while True:
+            t = 0.01
+            status = self.px[peer_id].status(seq_id)
+            if status.decided:
+                break
+            time.sleep(t)
+            if (t < 10):
+                t *= 2
         return self.px[peer_id].status(seq_id)
 
     def kill(self, peer_id):
@@ -318,6 +324,10 @@ class PaxosTest:
                 break
         return self.px[peer_id].status(seq_id)
 
+    def done(self, peer_id, seq_id):
+        self.px[peer_id].done(seq_id)
+        time.sleep(1)
+
     def finalize(self):
         if(self.success):
             print(self.test_name + " succeeded")
@@ -332,7 +342,7 @@ class PaxosTest:
         if status.decided == False:
             flag = (status.decided == decided)
         else:
-            flag = (status.decided == decided and status.value == value)
+            flag = (status.decided == decided and (status.value == value or value == None))
         if not flag:
             self.success = False
 
@@ -342,6 +352,8 @@ class PaxosTest:
         self.majority_test()
         time.sleep(10)
         self.done_test()
+        time.sleep(10)
+        self.pressure_test()
         print("All tests completed!")
 
     def basic_test(self):
@@ -381,25 +393,39 @@ class PaxosTest:
         self.finalize()
 
     def done_test(self):
-        self.init_peer_set("Done Test", 5)
-        self.start(0, 0, "how")
-        self.start(0, 1, "are")
+        self.init_peer_set("Done Test", 3)
+        str = ["how", "are", "you", "I'm", "fine", "thank", "you", "and", "you"]
+        for i in range(len(str)):
+            self.start(i % 3, i, str[i])
+            self.wait_status(i % 3, i)
+        self.done(0, 2)
+        self.assert_status(0, 2, True)
+        self.done(1, 3)
+        self.assert_status(1, 2, True)
+        self.done(2, 4)
+        self.assert_status(2, 2, False)
+        self.done(1, 4)
+        self.assert_status(1, 4, True)
+        self.done(0, 4)
+        self.assert_status(0, 4, False)
         self.finalize()
 
-    #for k in range(20):
-    #    px[0].start(k, k * k)
-    #time.sleep(5)
-    #px[0].done(17)
-    #px[1].done(17)
-    #px[2].done(17)
-    #px[0].done(18)
-    #px[1].done(18)
-    #time.sleep(5)
-    #for k in range(20):
-    #    for i in range(3):
-    #        if (k < px[i].min()):
-    #            continue
-    #        print("{} status[{}]:{}".format(k, i, px[i].status(k)))
+    def pressure_test(self):
+        self.init_peer_set("Pressure Test", 10)
+
+        def vote(peer_id, value):
+            seq = 0
+            for i in range(len(value)):
+                while (True):
+                    self.start(peer_id, seq, [peer_id, value[i]])
+                    status = self.wait_status(peer_id, seq)
+                    if (status.value[0] == peer_id and status.value[1] == value[i]):
+                        break
+                    seq = seq + 1
+        for i in range(10):
+            threading.Thread(target=vote(i, [i for i in range(10)])).start()
+        self.wait_status(0, 99)
+        self.finalize()
 
 if __name__ == "__main__":
     PaxosTest().test()
