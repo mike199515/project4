@@ -11,7 +11,9 @@ from paxos_peer import PaxosPeer
 import threading
 import queue
 import time
-
+import re
+import random
+from IPython import embed
 
 class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
     METHODS = {'insert', 'delete', 'get', 'update', 'serialize', 'countkey', 'dump', 'shutdown'}
@@ -110,11 +112,18 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
             self.path = None
         self.consensus_request()
 
+    def _get_key(self,path):
+        keys=re.findall(r"(?<=key=).*?(?=&)",path)
+        if not keys:
+            keys.append("")
+        return keys[0]
+
     def consensus_request(self):
         # print("receive op")
         with self.server.queue_lock:
             print("adding path {}".format(self.path))
-            self.server.pending_queue.put((self, self.path))
+            key=self._get_key(self.path)
+            self.server.pending_queue.setdefault(key,queue.Queue()).put((self,self.path))
             self.server.queue_cond.notify()
         self.handler_lock = threading.Lock()
         self.handler_cond = threading.Condition(self.handler_lock)
@@ -159,22 +168,44 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
         self.database = Database()
         self.server_id = server_id
         self.paxos_peer = paxos_peer
-        self.pending_queue = queue.Queue()
+        self.pending_queue = dict()
         self.queue_lock = threading.Lock()
         self.queue_cond = threading.Condition(self.queue_lock)
         self.seq = 0
         threading.Thread(target=self.pending_handler).start()
         super(KvpaxosHttpServer, self).__init__(*args, **kargs)
 
+    def worker(self,is_self_server,handler,path,nr_remain,lock,cond):
+        def run():
+            if is_self_server:  # this server's operation
+                #print("@@@@@@@@@@@@@{} do desired job @{},path={}".format(self.server_id, self.seq,path))
+                out_str = handler.handle_request(path)
+                handler.write_result(out_str)
+                with handler.handler_lock:
+                    handler.handler_cond.notify()
+            else:
+                #print("@@@@@@@@@@@@@{} do other's job @{},path={}".format(self.server_id, self.seq,path))
+                handler.handle_request(path)
+            with lock:
+                nr_remain[0]-=1
+                if nr_remain[0]==0:
+                    cond.notify()
+        threading.Thread(target=run).start()
+
     def pending_handler(self):
         while True:
             with self.queue_lock:
-                while self.pending_queue.empty():
+                while not self.pending_queue:
                     # print("no operation,sleep")
                     self.queue_cond.wait()
-                handler, path = self.pending_queue.get()
+                pending_paths=dict()
+                pending_handlers=dict()
+                for key in self.pending_queue:
+                    pending_handlers[key],pending_paths[key]=self.pending_queue[key].get()
+                self.pending_queue={k:v for k,v in self.pending_queue.items() if not v.empty()}
             while True:
-                self.paxos_peer.start(self.seq, (self.server_id, path))
+                time.sleep(random.random()*0.1)
+                self.paxos_peer.start(self.seq, (self.server_id, pending_paths))
                 while True:
                     t = 0.01
                     status = self.paxos_peer.status(self.seq)
@@ -183,21 +214,30 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
                     time.sleep(t)
                     if (t < 10):
                         t *= 2
-                res_server_id, res_path = status.value
+                res_server_id, res_paths = status.value
                 # print("######### decided value {}".format(res_path))
 
-                # self.paxos_peer.done(self.seq)
+
+                nr_remain=[len(res_paths)]
+                lock=threading.Lock()
+                cond=threading.Condition(lock)
+                #print("received consensus {}".format(res_paths))
+                with lock:
+                    if res_server_id==self.server_id:
+                        for key in res_paths:
+                            self.worker(True,pending_handlers[key],res_paths[key],nr_remain,lock,cond)
+                    else:
+                        handler=next(iter(pending_handlers.values()))#any is fine
+                        for key in res_paths:
+                            self.worker(False,handler,res_paths[key],nr_remain,lock,cond)
+                    #print("sleep for a while")
+                    cond.wait()
+                if (self.seq+1)%100==0:
+                    self.paxos_peer.done(self.seq)
                 self.seq += 1
-                if res_server_id == self.server_id:  # this server's operation
-                    print("{} do desired job @{}".format(self.server_id, self.seq))
-                    out_str = handler.handle_request(res_path)
-                    handler.write_result(out_str)
-                    with handler.handler_lock:
-                        handler.handler_cond.notify()
+                if res_server_id==self.server_id:
                     break
-                else:
-                    print("{} do other's job @{}".format(self.server_id, self.seq))
-                    handler.handle_request(res_path)
+
 
 
 if __name__ == "__main__":
@@ -217,19 +257,14 @@ if __name__ == "__main__":
         threading.Thread(target=run, args=(i,)).start()
 
 
-    def op(k):
+    def op(server_id,key):
         print("request_sent")
-        conn = http.client.HTTPConnection(server_str[k])
-        conn.request(method="POST", url='/kv/insert', body="key=k&value=v&requestid=423")
+        conn = http.client.HTTPConnection(server_str[server_id])
+        conn.request(method="POST", url='/kv/insert', body="key={}&value=v".format(key))
         res = conn.getresponse()
         res_json = json.loads(res.read().decode('utf-8'))
         print(res_json)
 
-
-    threading.Thread(target=op, args=(0,)).start()
-    threading.Thread(target=op, args=(0,)).start()
-    threading.Thread(target=op, args=(0,)).start()
-    threading.Thread(target=op, args=(0,)).start()
-    threading.Thread(target=op, args=(0,)).start()
-    time.sleep(5)
-    threading.Thread(target=op, args=(1,)).start()
+    for i in range(3):
+        threading.Thread(target=op, args=(i%3,i)).start()
+        time.sleep(0.01)
