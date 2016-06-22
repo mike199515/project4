@@ -11,6 +11,9 @@ from paxos_peer import PaxosPeer
 import threading
 import queue
 import time
+import re
+import random
+from IPython import embed
 
 
 class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
@@ -26,7 +29,7 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
             key, value = input.split('=')
             value = urllib.parse.unquote(value, encoding='utf-8', errors='replace')
             ret[key] = value
-        #trick to avoid crash
+        # trick to avoid crash
         if "requestid" in ret:
             ret.pop("requestid")
         return ret
@@ -37,37 +40,37 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
         # print("output:{}".format(ret))
         return ret
 
-    def countkey_request(self, ins):
-        assert (self.command == "GET"), "wrong HTTP method"
+    def countkey_request(self, command, ins):
+        assert (command == "GET"), "wrong HTTP method"
         keycount = self.server.database.countkey()
         outs = {'result': str(keycount)}
         return outs
 
-    def dump_request(self, ins):
-        assert (self.command == "GET"), "wrong HTTP method"
+    def dump_request(self, command, ins):
+        assert (command == "GET"), "wrong HTTP method"
         outs = self.server.database.dump()
         return outs
 
     def shutdown_request(self, ins):
         os.system('bin/stop_server -b')
 
-    def serialize_request(self, ins):
+    def serialize_request(self, command, ins):
         # we need to verify it is the other server that calls us
-        assert (self.command == "GET"), "wrong HTTP method"
+        assert (command == "GET"), "wrong HTTP method"
         data_str = self.server.database.serialize()
         outs = {'data': data_str}
         return outs
 
-    def insert_request(self, ins):
-        assert (self.command == "POST"), 'wrong HTTP method'
+    def insert_request(self, command, ins):
+        assert (command == "POST"), 'wrong HTTP method'
         assert (len(ins) == 2 and 'key' in ins and 'value' in ins), 'wrong input'
         key, value = ins['key'], ins['value']
         success = self.server.database.insert(key, value)
         outs = {'success': success}
         return outs
 
-    def delete_request(self, ins):
-        assert (self.command == "POST"), 'wrong HTTP method'
+    def delete_request(self, command, ins):
+        assert (command == "POST"), 'wrong HTTP method'
         assert (len(ins) == 1 and 'key' in ins), 'wrong input'
         key = ins['key']
         value = self.server.database.delete(key)
@@ -77,16 +80,16 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
             outs = {'success': False}
         return outs
 
-    def update_request(self, ins):
-        assert (self.command == "POST"), 'wrong HTTP method'
+    def update_request(self, command, ins):
+        assert (command == "POST"), 'wrong HTTP method'
         assert (len(ins) == 2 and 'key' in ins and 'value' in ins), 'wrong input'
         key, value = ins['key'], ins['value']
         success = self.server.database.update(key, value)
         outs = {'success': success}
         return outs
 
-    def get_request(self, ins):
-        assert (self.command == "GET"), 'wrong HTTP method'
+    def get_request(self, command, ins):
+        assert (command == "GET"), 'wrong HTTP method'
         assert (len(ins) == 1 and '?key' in ins), 'wrong input'
         key = ins['?key']
         value = self.server.database.get(key)
@@ -110,20 +113,27 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
             self.path = None
         self.consensus_request()
 
+    def _get_key(self, path):
+        keys = re.findall(r"(?<=key=).*?(?=&)", path)
+        if not keys:
+            keys.append("")
+        return keys[0]
+
     def consensus_request(self):
         # print("receive op")
         with self.server.queue_lock:
             print("adding path {}".format(self.path))
-            self.server.pending_queue.put((self, self.path))
+            key = self._get_key(self.path)
+            self.server.pending_queue.setdefault(key, queue.Queue()).put((self, (self.command, self.path)))
             self.server.queue_cond.notify()
         self.handler_lock = threading.Lock()
         self.handler_cond = threading.Condition(self.handler_lock)
         with self.handler_lock:
             self.handler_cond.wait()
-        # print("@@@@@@@@@@@ alive again")
+            # print("@@@@@@@@@@@ alive again")
 
     # return out_str
-    def handle_request(self, path):
+    def handle_request(self, command, path):
         try:
             assert (path), "POST fail"
             request = path.split('/')
@@ -139,7 +149,7 @@ class ProjectHTTPRequestHandler(BaseHTTPRequestHandler):
             assert (request in ProjectHTTPRequestHandler.METHODS), 'no such method'
             ins = self.parse_input(input_str)
             # print("receive request: {} {}".format(request, input_str))
-            out_dict = getattr(self, request + "_request")(ins)
+            out_dict = getattr(self, request + "_request")(command, ins)
             out_str = self.gen_output(out_dict)
         except Exception as e:
             print("exception {}".format(e))
@@ -159,22 +169,47 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
         self.database = Database()
         self.server_id = server_id
         self.paxos_peer = paxos_peer
-        self.pending_queue = queue.Queue()
+        self.pending_queue = dict()
         self.queue_lock = threading.Lock()
         self.queue_cond = threading.Condition(self.queue_lock)
         self.seq = 0
         threading.Thread(target=self.pending_handler).start()
         super(KvpaxosHttpServer, self).__init__(*args, **kargs)
 
+    def worker(self, is_self_server, handler, command_path, nr_remain, lock, cond):
+        def run():
+            if is_self_server:  # this server's operation
+                print("@@@@@@@@@@@@@{} do desired job @{}, cpath={}".format(self.server_id, self.seq, command_path))
+                out_str = handler.handle_request(*command_path)
+                handler.write_result(out_str)
+                with handler.handler_lock:
+                    handler.handler_cond.notify()
+            else:
+                print("@@@@@@@@@@@@@{} do other's job @{},cpath={}".format(self.server_id, self.seq, command_path))
+                handler.handle_request(*command_path)
+            with lock:
+                nr_remain[0] -= 1
+                if nr_remain[0] == 0:
+                    cond.notify()
+
+        threading.Thread(target=run).start()
+
     def pending_handler(self):
         while True:
             with self.queue_lock:
-                while self.pending_queue.empty():
+                while not self.pending_queue:
                     # print("no operation,sleep")
                     self.queue_cond.wait()
-                handler, path = self.pending_queue.get()
+                pending_command_paths = dict()
+                pending_handlers = dict()
+                if "" in self.pending_queue:
+                    pending_handlers[""], pending_command_paths[""] = self.pending_queue[""].get()
+                else:
+                    for key in self.pending_queue:
+                        pending_handlers[key], pending_command_paths[key] = self.pending_queue[key].get()
+                self.pending_queue = {k: v for k, v in self.pending_queue.items() if not v.empty()}
             while True:
-                self.paxos_peer.start(self.seq, (self.server_id, path))
+                self.paxos_peer.start(self.seq, (self.server_id, pending_command_paths))
                 while True:
                     t = 0.01
                     status = self.paxos_peer.status(self.seq)
@@ -183,21 +218,29 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
                     time.sleep(t)
                     if (t < 10):
                         t *= 2
-                res_server_id, res_path = status.value
+                res_server_id, res_command_paths = status.value
                 # print("######### decided value {}".format(res_path))
 
-                # self.paxos_peer.done(self.seq)
+
+                nr_remain = [len(res_command_paths)]
+                lock = threading.Lock()
+                cond = threading.Condition(lock)
+                # print("received consensus {}".format(res_paths))
+                with lock:
+                    if res_server_id == self.server_id:
+                        for key in res_command_paths:
+                            self.worker(True, pending_handlers[key], res_command_paths[key], nr_remain, lock, cond)
+                    else:
+                        handler = next(iter(pending_handlers.values()))  # any is fine
+                        for key in res_command_paths:
+                            self.worker(False, handler, res_command_paths[key], nr_remain, lock, cond)
+                    # print("sleep for a while")
+                    cond.wait()
+                if (self.seq + 1) % 100 == 0:
+                    self.paxos_peer.done(self.seq)
                 self.seq += 1
-                if res_server_id == self.server_id:  # this server's operation
-                    print("{} do desired job @{}".format(self.server_id, self.seq))
-                    out_str = handler.handle_request(res_path)
-                    handler.write_result(out_str)
-                    with handler.handler_lock:
-                        handler.handler_cond.notify()
+                if res_server_id == self.server_id:
                     break
-                else:
-                    print("{} do other's job @{}".format(self.server_id, self.seq))
-                    handler.handle_request(res_path)
 
 
 if __name__ == "__main__":
@@ -217,19 +260,26 @@ if __name__ == "__main__":
         threading.Thread(target=run, args=(i,)).start()
 
 
-    def op(k):
+    def dump(server_id):
         print("request_sent")
-        conn = http.client.HTTPConnection(server_str[k])
-        conn.request(method="POST", url='/kv/insert', body="key=k&value=v&requestid=423")
+        conn = http.client.HTTPConnection(server_str[server_id])
+        conn.request(method="GET", url='/kvman/dump')
         res = conn.getresponse()
         res_json = json.loads(res.read().decode('utf-8'))
         print(res_json)
 
 
-    threading.Thread(target=op, args=(0,)).start()
-    threading.Thread(target=op, args=(0,)).start()
-    threading.Thread(target=op, args=(0,)).start()
-    threading.Thread(target=op, args=(0,)).start()
-    threading.Thread(target=op, args=(0,)).start()
-    time.sleep(5)
-    threading.Thread(target=op, args=(1,)).start()
+    def op(server_id, key):
+        print("request_sent")
+        conn = http.client.HTTPConnection(server_str[server_id])
+        conn.request(method="POST", url='/kv/insert', body="key={}&value=v".format(key))
+        res = conn.getresponse()
+        res_json = json.loads(res.read().decode('utf-8'))
+        print(res_json)
+
+
+    for i in range(30):
+        threading.Thread(target=op, args=(i % 3, i)).start()
+        time.sleep(0.01)
+
+    threading.Thread(target=dump, args=(i % 3,)).start()
