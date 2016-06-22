@@ -172,20 +172,24 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
         self.pending_queue = dict()
         self.queue_lock = threading.Lock()
         self.queue_cond = threading.Condition(self.queue_lock)
-        self.seq = 0
+        self.seq_lock=threading.Lock()
+        self.seq_cond=threading.Condition(self.seq_lock)
+        self.max_seq=0
+        self.working_seq = set()
+        self.MAX_WORKER=5
         threading.Thread(target=self.pending_handler).start()
         super(KvpaxosHttpServer, self).__init__(*args, **kargs)
 
-    def worker(self, is_self_server, handler, command_path, nr_remain, lock, cond):
+    def worker(self,is_self_server,my_seq , handler, command_path, nr_remain, lock, cond):
         def run():
             if is_self_server:  # this server's operation
-                print("@@@@@@@@@@@@@{} do desired job @{}, cpath={}".format(self.server_id, self.seq, command_path))
+                print("@@@@@@@@@@@@@ [{}]do desired job @{}, cpath={}".format(self.server_id, my_seq, command_path))
                 out_str = handler.handle_request(*command_path)
                 handler.write_result(out_str)
                 with handler.handler_lock:
                     handler.handler_cond.notify()
             else:
-                print("@@@@@@@@@@@@@{} do other's job @{},cpath={}".format(self.server_id, self.seq, command_path))
+                print("@@@@@@@@@@@@@ [{}]do other's job @{},cpath={}".format(self.server_id, my_seq, command_path))
                 handler.handle_request(*command_path)
             with lock:
                 nr_remain[0] -= 1
@@ -208,39 +212,70 @@ class KvpaxosHttpServer(ThreadingMixIn, HTTPServer):
                     for key in self.pending_queue:
                         pending_handlers[key], pending_command_paths[key] = self.pending_queue[key].get()
                 self.pending_queue = {k: v for k, v in self.pending_queue.items() if not v.empty()}
+                with self.seq_lock:
+                    while True:
+                        if len(self.working_seq)<self.MAX_WORKER:
+                            print("***** generate new worker")
+                            threading.Thread(target=self.pending_worker,args=(pending_handlers,pending_command_paths)).start()
+                            break
+                        else:
+                            print("***** wait")
+                            self.seq_cond.wait()
+
+    def pending_worker(self,pending_handlers, pending_command_paths):
+        while True:
+            with self.seq_lock:
+                if self.working_seq:
+                    my_seq=max(self.working_seq)+1
+                else:
+                    my_seq=self.max_seq+1
+                self.max_seq=my_seq
+                print("### [{}]assign seq number is {}".format(self.server_id,my_seq))
+                assert(my_seq not in self.working_seq)
+                self.working_seq.add(my_seq)
+            print("[{}]start paxos @ {}".format(self.server_id,my_seq))
+            self.paxos_peer.start(my_seq, (self.server_id, pending_command_paths))
             while True:
-                self.paxos_peer.start(self.seq, (self.server_id, pending_command_paths))
-                while True:
-                    t = 0.01
-                    status = self.paxos_peer.status(self.seq)
-                    if status.decided:
-                        break
-                    time.sleep(t)
-                    if (t < 10):
-                        t *= 2
-                res_server_id, res_command_paths = status.value
-                # print("######### decided value {}".format(res_path))
-
-
-                nr_remain = [len(res_command_paths)]
-                lock = threading.Lock()
-                cond = threading.Condition(lock)
-                # print("received consensus {}".format(res_paths))
-                with lock:
-                    if res_server_id == self.server_id:
-                        for key in res_command_paths:
-                            self.worker(True, pending_handlers[key], res_command_paths[key], nr_remain, lock, cond)
-                    else:
-                        handler = next(iter(pending_handlers.values()))  # any is fine
-                        for key in res_command_paths:
-                            self.worker(False, handler, res_command_paths[key], nr_remain, lock, cond)
-                    # print("sleep for a while")
-                    cond.wait()
-                if (self.seq + 1) % 100 == 0:
-                    self.paxos_peer.done(self.seq)
-                self.seq += 1
-                if res_server_id == self.server_id:
+                t = 0.01
+                status = self.paxos_peer.status(my_seq)
+                if status.decided:
                     break
+                time.sleep(t)
+                if (t < 10):
+                    t *= 2
+            res_server_id, res_command_paths = status.value
+
+            nr_remain = [len(res_command_paths)]
+            lock = threading.Lock()
+            cond = threading.Condition(lock)
+            print("#### [{}]consensus {} done".format(self.server_id,my_seq))
+            #start to wait until it is head
+            with self.seq_lock:
+                while True:
+                    if my_seq!=min(self.working_seq):
+                        self.seq_cond.wait()
+                    else:
+                        break
+            print("#### [{}]start doing seq {}".format(self.server_id,my_seq))
+            with lock:
+                if res_server_id == self.server_id:
+                    for key in res_command_paths:
+                        self.worker(True,my_seq, pending_handlers[key], res_command_paths[key], nr_remain, lock, cond)
+                else:
+                    handler = next(iter(pending_handlers.values()))  # any is fine
+                    for key in res_command_paths:
+                        self.worker(False,my_seq, handler, res_command_paths[key], nr_remain, lock, cond)
+                # print("sleep for a while")
+                cond.wait()
+            with self.seq_lock:
+                assert(my_seq==min(self.working_seq)),"not the smallest"
+                if (my_seq+1)%100==0:
+                    self.paxos_peer.done(my_seq)
+                self.working_seq.remove(my_seq)
+                self.seq_cond.notify_all()
+            if res_server_id == self.server_id:
+                break
+            print("$$$$$$$$$$$$$$$$$$$$$$$$ [{}]FAIL @{}, reassign$$$$$$$$$$$$$$$$".format(self.server_id,my_seq))
 
 
 if __name__ == "__main__":
@@ -275,11 +310,16 @@ if __name__ == "__main__":
         conn.request(method="POST", url='/kv/insert', body="key={}&value=v".format(key))
         res = conn.getresponse()
         res_json = json.loads(res.read().decode('utf-8'))
-        print(res_json)
+        print("request{}:{}".format((server_id,key),res_json))
 
-
+    '''
     for i in range(30):
         threading.Thread(target=op, args=(i % 3, i)).start()
         time.sleep(0.01)
 
     threading.Thread(target=dump, args=(i % 3,)).start()
+    '''
+    for i in range(100):
+        threading.Thread(target=op, args=(0, 0)).start()
+        threading.Thread(target=op, args=(1, 0)).start()
+        threading.Thread(target=op, args=(2, 0)).start()
