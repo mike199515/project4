@@ -31,6 +31,10 @@ class PaxosState:
 
 
 class PaxosRequestHandler(BaseHTTPRequestHandler):
+    if __name__ == "__main__":
+       def log_message(self, format, *args):
+            return
+
     def do_GET(self):
         pass
 
@@ -91,10 +95,9 @@ class PaxosRequestHandler(BaseHTTPRequestHandler):
     def done_val(self):
         self._reply(self.server.peer.done_val)
 
-
 class PaxosPeer:
     def parse_url(self, url):
-        print(url.split(":"))
+        #print(url.split(":"))
         server, port = url.split(":")
         port = int(port)
         return server, port
@@ -108,24 +111,38 @@ class PaxosPeer:
         self.paxos_state_lock = threading.Lock()
         self.dead = False
         self.done_val = -1
+        self.server = None
 
         def run_server():
-            server = ThreadingHttpServer(self, self.my_url, PaxosRequestHandler)
-            server.serve_forever()
+            self.server = ThreadingHttpServer(self, self.my_url, PaxosRequestHandler)
+            self.server.serve_forever()
 
-        threading.Thread(target=run_server).start()
-        print("acceptor server start at {}".format(self.my_url))
+        m_thread = threading.Thread(target=run_server)
+        m_thread.setDaemon(True)
+        m_thread.start()
+
+        if  __name__ != "__main__":
+            print("acceptor server start at {}".format(self.my_url))
 
     def _send(self, msg, url):
         # print("send {} to {}".format(msg, url))
-        conn = http.client.HTTPConnection(url)
-        try:
-            conn.request(method="POST", url="", body=json.dumps(msg))
-            res = conn.getresponse()
-            ret = json.loads(res.read().decode('utf-8'))
-            return ret
-        except ConnectionRefusedError:
-            return ("connection fail", ())
+        flag = False
+        fail_time = 0
+        while fail_time < 5:
+            conn = http.client.HTTPConnection(url)
+            try:
+                conn.request(method="POST", url="", body=json.dumps(msg))
+                res = conn.getresponse()
+                ret = json.loads(res.read().decode('utf-8'))
+                return ret
+            except ConnectionRefusedError:
+                fail_time = fail_time + 1
+            except:
+                if __name__ == "__main__":
+                    pass
+                else:
+                    raise
+        return ("connection fail", ())
 
     def _send_all(self, msg, require_all=False):
         res = []
@@ -192,6 +209,8 @@ class PaxosPeer:
 
     # start aggreement on new instance
     def start(self, seq, v):
+        if(self.dead):
+            return
         def run():
             self._propose(seq, v)
 
@@ -202,6 +221,8 @@ class PaxosPeer:
 
     # get info about an instance
     def status(self, seq):
+        if(self.dead):
+            return None
         with self.paxos_state_lock:
             if seq in self.paxos_state:
                 return self.paxos_state[seq]
@@ -210,6 +231,8 @@ class PaxosPeer:
 
     # ok to forget all instance <=seq
     def done(self, seq):
+        if self.dead:
+            return
         def run():
             self.done_val = seq
             res = self._send_all(("done_val", ()), require_all=True)
@@ -225,6 +248,8 @@ class PaxosPeer:
 
     # highest instance seq known or -1
     def max(self):
+        if self.dead:
+            return -1
         with self.paxos_state_lock:
             if (len(self.paxos_state) == 0):
                 return -1
@@ -232,26 +257,141 @@ class PaxosPeer:
 
     # instances before this have been forgotten or -1
     def min(self):
+        if self.dead:
+            return -1
         with self.paxos_state_lock:
             if (len(self.paxos_state) == 0):
                 return -1
             return min(self.paxos_state)
 
+    def kill(self):
+        if not self.dead:
+            self.dead = True
+            self.server.socket.close()
+            self.server.server_close()
+
+class PaxosTest:
+    def __init__(self):
+        self.peer = None
+        self.px = None
+        self.peer_num = 0
+        self.success = True
+        self.test_name = "Default Test Name"
+
+    def init_peer_set(self, name, peer_num):
+        self.test_name = name
+        print("start " + name)
+        self.success = True
+        self.peer_num = peer_num
+        self.peers = ["localhost:{0}".format(8000 + i) for i in range(peer_num)]
+        self.px = [PaxosPeer(self.peers, i) for i in range(peer_num)]
+
+    def start(self, peer_id, seq_id, value):
+        self.px[peer_id].start(seq_id, value)
+
+    def wait_status(self, peer_id, seq_id):
+        while self.px[peer_id].status(seq_id).decided == False:
+            pass
+        return self.px[peer_id].status(seq_id)
+
+    def kill(self, peer_id):
+        self.px[peer_id].kill()
+
+    def print_status(self, seq_id, status):
+        print("seq_id: {} decided: {} value: {}".format(seq_id, status.decided, status.value))
+
+    def wait_and_print(self, peer_id, seq_id):
+        self.print_status(seq_id, self.wait_status(peer_id, seq_id))
+
+    def wait_until_timeout(self, peer_id, seq_id):
+        start = time.time()
+        while self.px[peer_id].status(seq_id).decided == False:
+            if time.time() - start > 5:
+                break
+        return self.px[peer_id].status(seq_id)
+
+    def finalize(self):
+        if(self.success):
+            print(self.test_name + " succeeded")
+        else:
+            print(self.test_name + " failed")
+        for i in range(self.peer_num):
+            self.kill(i)
+
+    def assert_status(self, peer_id, seq_id, decided, value = None):
+        status = self.px[peer_id].status(seq_id)
+        flag = True
+        if status.decided == False:
+            flag = (status.decided == decided)
+        else:
+            flag = (status.decided == decided and status.value == value)
+        if not flag:
+            self.success = False
+
+    def test(self):
+        self.basic_test()
+        time.sleep(10)
+        self.majority_test()
+        time.sleep(10)
+        self.done_test()
+        print("All tests completed!")
+
+    def basic_test(self):
+        self.init_peer_set("Basic Test", 5)
+
+        def vote(peer_id, value):
+            seq = 0
+            while(True):
+                self.start(peer_id, seq, [peer_id, value])
+                status = self.wait_status(peer_id, seq)
+                if(status.value[0] == peer_id):
+                    break
+                seq = seq + 1
+        threading.Thread(target=vote(0, 'hhh')).start()
+        threading.Thread(target=vote(1, 'lol')).start()
+        status1 = self.wait_status(0, 0)
+        self.assert_status(1, 0, True, status1.value)
+        status2 = self.wait_status(1, 1)
+        self.assert_status(0, 1, True, status2.value)
+        if(status1.value[0] == status2.value[0]):
+            self.success = False
+        self.finalize()
+
+    def majority_test(self):
+        self.init_peer_set("Majority Test", 3)
+        self.start(0, 0, 0)
+        self.wait_and_print(0, 0)
+        self.assert_status(0, 0, True, 0)
+        self.kill(2)
+        self.start(0, 1, 1)
+        self.wait_and_print(0, 1)
+        self.assert_status(0, 1, True, 1)
+        self.kill(1)
+        self.start(0, 2, 2)
+        self.wait_until_timeout(0, 2)
+        self.assert_status(0, 2, False)
+        self.finalize()
+
+    def done_test(self):
+        self.init_peer_set("Done Test", 5)
+        self.start(0, 0, "how")
+        self.start(0, 1, "are")
+        self.finalize()
+
+    #for k in range(20):
+    #    px[0].start(k, k * k)
+    #time.sleep(5)
+    #px[0].done(17)
+    #px[1].done(17)
+    #px[2].done(17)
+    #px[0].done(18)
+    #px[1].done(18)
+    #time.sleep(5)
+    #for k in range(20):
+    #    for i in range(3):
+    #        if (k < px[i].min()):
+    #            continue
+    #        print("{} status[{}]:{}".format(k, i, px[i].status(k)))
 
 if __name__ == "__main__":
-    peers = ["localhost:8000", "localhost:8001", "localhost:8002"]
-    px = [PaxosPeer(peers, i) for i in range(3)]
-    for k in range(20):
-        px[0].start(k, k * k)
-    time.sleep(5)
-    px[0].done(17)
-    px[1].done(17)
-    px[2].done(17)
-    px[0].done(18)
-    px[1].done(18)
-    time.sleep(5)
-    for k in range(20):
-        for i in range(3):
-            if (k < px[i].min()):
-                continue
-            print("{} status[{}]:{}".format(k, i, px[i].status(k)))
+    PaxosTest().test()
